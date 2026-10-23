@@ -1,0 +1,173 @@
+name: Release
+
+# Two ways to release:
+#   1. Actions → Release → Run workflow: pick a bump (or type an exact version). The workflow tests, bumps
+#      package.json, commits, tags, pushes, then builds, publishes to npm and creates the GitHub release.
+#   2. Tag locally and push (`npm version patch && git push --follow-tags`): only the publish job runs.
+# Every step after tagging is safe to re-run ("Re-run failed jobs"): an already published version or an existing
+# release is detected and skipped.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major, prepatch, preminor, premajor, prerelease]
+        default: patch
+      version:
+        description: Exact version instead of a bump, e.g. 1.2.0 (optional)
+        type: string
+        required: false
+      preid:
+        description: Pre-release identifier for pre* bumps
+        type: string
+        default: beta
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # push the version commit and tag, create the release
+  id-token: write # npm provenance and trusted publishing
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Test, bump version and tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Must run from a branch
+        if: github.ref_type != 'branch'
+        run: |
+          echo "::error::Run this workflow from a branch (e.g. main), not from a tag."
+          exit 1
+      - uses: actions/checkout@v5
+        with:
+          # Pushing to a protected branch needs a token that may bypass protection; GITHUB_TOKEN works otherwise.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Bump version, commit and tag
+        id: bump
+        env:
+          BUMP: ${{ inputs.version || inputs.bump }}
+          PREID: ${{ inputs.preid }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tag="$(npm version "$BUMP" --preid "$PREID" --message "chore(release): %s")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Created $tag"
+      - name: Push commit and tag
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        # --atomic: the commit and the tag land together or not at all.
+        run: git push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/$TAG"
+
+  publish:
+    name: Build, publish to npm and create GitHub release
+    needs: tag
+    if: ${{ !cancelled() && (needs.tag.result == 'success' || (github.event_name == 'push' && needs.tag.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Install and build
+        run: npm ci # the prepare script builds dist/
+      - name: Read package metadata
+        id: meta
+        run: |
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match package.json version $version"
+            exit 1
+          fi
+          # Pre-releases go to the "next" dist-tag so `@latest` never resolves to one.
+          if [[ "$version" == *-* ]]; then prerelease=true; dist_tag=next; else prerelease=false; dist_tag=latest; fi
+          {
+            echo "name=$name"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "dist_tag=$dist_tag"
+          } >> "$GITHUB_OUTPUT"
+      - run: npm run typecheck
+      - run: npm test
+      - name: Pack
+        id: pack
+        # dist/ is already built, so skip prepare; this keeps npm's stdout as pure JSON.
+        run: |
+          tarball="$(npm pack --ignore-scripts --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].filename))')"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "Packed $tarball"
+      - name: Smoke-test the tarball
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          npm install -g "./$TARBALL"
+          skill-manager-mcp --version
+      - name: Publish to npm
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          DIST_TAG: ${{ steps.meta.outputs.dist_tag }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          # Uses npm trusted publishing when configured for this repo; otherwise this token.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already on npm, skipping publish"
+            exit 0
+          fi
+          npm publish "./$TARBALL" --provenance --access public --tag "$DIST_TAG"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists, updating its tarball"
+            gh release upload "$TAG" "$TARBALL" --clobber
+            exit 0
+          fi
+          flags=(--title "$TAG" --generate-notes --verify-tag)
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" "$TARBALL" "${flags[@]}"
+      - name: Summary
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          DIST_TAG: ${{ steps.meta.outputs.dist_tag }}
+        run: |
+          {
+            echo "## Released $NAME $VERSION"
+            echo
+            echo "- npm: https://www.npmjs.com/package/$NAME/v/$VERSION (dist-tag \`$DIST_TAG\`)"
+            echo "- GitHub: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo
+            echo '```bash'
+            echo "npx -y $NAME@$VERSION --version"
+            echo "npm install -g $NAME@$VERSION"
+            echo "bun add -g $NAME@$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

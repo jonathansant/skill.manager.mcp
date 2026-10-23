@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm pack
+      # Install the packed tarball the way users will, and make sure the CLI starts under each tool.
+      - name: npm global install
+        run: |
+          npm install -g ./skill-manager-mcp-*.tgz
+          skill-manager-mcp --version
+      - name: npx
+        run: npx --yes --package "./$(ls skill-manager-mcp-*.tgz)" skill-manager-mcp --version
+      - name: bun global install
+        run: |
+          bun add -g "$PWD/$(ls skill-manager-mcp-*.tgz)"
+          "$HOME/.bun/bin/skill-manager-mcp" --version

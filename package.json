@@ -1,0 +1,57 @@
+{
+  "name": "skill-manager-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that serves agent skills from git-backed profiles and keeps them in sync",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "skills",
+    "agent-skills",
+    "claude",
+    "git"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonathansant/skill.manager.mcp.git"
+  },
+  "homepage": "https://github.com/jonathansant/skill.manager.mcp#readme",
+  "bugs": {
+    "url": "https://github.com/jonathansant/skill.manager.mcp/issues"
+  },
+  "type": "module",
+  "bin": {
+    "skill-manager-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist/**/*.js",
+    "README.md",
+    "config.example.yaml"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/index.js',0o755)\"",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

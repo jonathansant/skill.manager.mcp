@@ -1,0 +1,34 @@
+# Copy to ~/.config/skill-manager-mcp/config.yaml (or point --config / SKILL_MANAGER_CONFIG at it).
+
+# How often each profile checks its branch for new commits. Profiles can override it.
+pollIntervalSeconds: 60
+
+# Where checkouts are kept. Default: ~/.cache/skill-manager-mcp
+# cacheDir: ~/.cache/skill-manager-mcp
+
+# A profile is a git repo of skills. Every directory containing a SKILL.md is a skill.
+profiles:
+  platform:
+    repo: git@github.com:my-org/platform-skills.git
+    # branch: main           # default
+    # path: .                # sub-directory holding the skills, default repo root
+  frontend:
+    repo: https://github.com/my-org/frontend-skills.git
+    path: skills
+    pollIntervalSeconds: 30
+  experimental:
+    repo: git@github.com:my-org/platform-skills.git
+    branch: next             # same repo, different branch
+  local:
+    repo: ~/code/my-skills   # local repos work too (relative paths resolve from this file)
+
+# Which profiles each agent gets. Select one with --agent <name> in the agent's MCP config.
+agents:
+  claude-code:
+    profiles: [platform, frontend]
+    # Optional: also copy the skills into the agent's native skills directory so they trigger natively.
+    installDir: ~/.claude/skills
+  backend-bot:
+    profiles: [platform]
+  early-adopters:
+    profiles: [platform, frontend, experimental]
